@@ -62,20 +62,55 @@ def count_pages(pdf_path):
     return len(re.findall(rb"/Type\s*/Page\b", data))
 
 
-def print_pdf(browser, html_path, pdf_path):
+CHROME_FLAGS = [
+    "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+    "--no-pdf-header-footer", "--print-to-pdf-no-header", "--hide-scrollbars", "--mute-audio",
+    "--disable-background-networking", "--disable-sync", "--disable-default-apps", "--disable-breakpad",
+    # macOS: without these, Chrome can sit waiting on the login keychain and never print.
+    "--use-mock-keychain", "--password-store=basic",
+]
+
+
+def _pdf_complete(path):
+    if not os.path.isfile(path) or os.path.getsize(path) < 1000:
+        return False
+    with open(path, "rb") as f:
+        f.seek(max(0, os.path.getsize(path) - 1024))
+        return b"%%EOF" in f.read()
+
+
+def print_pdf(browser, html_path, pdf_path, timeout=60):
+    """Print with headless Chrome/Edge. Waits for a complete PDF rather than for the browser to exit:
+    on some systems the browser lingers after printing, and waiting on it would look like a failure."""
+    import time
     profile = tempfile.mkdtemp(prefix="nf-chrome-")
+    proc = None
     try:
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
-        args = [browser, "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-                "--disable-extensions", "--no-pdf-header-footer", "--print-to-pdf-no-header",
-                "--user-data-dir=" + profile, "--print-to-pdf=" + pdf_path, Path(html_path).resolve().as_uri()]
-        subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
-    except subprocess.TimeoutExpired:
-        return False
+        args = [browser] + CHROME_FLAGS + ["--user-data-dir=" + profile, "--print-to-pdf=" + pdf_path,
+                                           Path(html_path).resolve().as_uri()]
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.time() + timeout
+        last_size = -1
+        while time.time() < deadline:
+            if _pdf_complete(pdf_path):
+                size = os.path.getsize(pdf_path)
+                if size == last_size:
+                    break  # complete and no longer growing
+                last_size = size
+            elif proc.poll() is not None and not os.path.exists(pdf_path):
+                break  # browser exited without printing
+            time.sleep(0.25)
+        return _pdf_complete(pdf_path)
     finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         shutil.rmtree(profile, ignore_errors=True)
-    return os.path.isfile(pdf_path) and os.path.getsize(pdf_path) > 1000
 
 
 def fmt_day(iso):

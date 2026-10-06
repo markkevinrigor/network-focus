@@ -20,6 +20,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: PDF maker check (prints what the browser says, for troubleshooting)
+        working-directory: plugins/network-focus/scripts
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, sys, time, tempfile, subprocess
+          sys.path.insert(0, ".")
+          import nf_render
+          b = nf_render.find_browser()
+          print("browser:", b)
+          d = tempfile.mkdtemp()
+          h, pdf = os.path.join(d, "t.html"), os.path.join(d, "t.pdf")
+          open(h, "w").write("<h1>hello</h1>")
+          t = time.time()
+          ok = nf_render.print_pdf(b, h, pdf)
+          print("print_pdf ok:", ok, "seconds:", round(time.time() - t, 1))
+          if not ok:
+              args = [b] + nf_render.CHROME_FLAGS + ["--user-data-dir=" + tempfile.mkdtemp(), "--print-to-pdf=" + pdf,
+                                                     "--enable-logging=stderr", "--v=0", "file://" + h]
+              try:
+                  r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+                  print("exit", r.returncode); print(r.stderr[-3000:])
+              except subprocess.TimeoutExpired as e:
+                  print("TIMEOUT"); print((e.stderr or b"")[-3000:])
+          PY
       - name: Unit tests (standard library only, includes a real one-page PDF render with the runner's Chrome)
         working-directory: plugins/network-focus/tests
         run: python -W error::ResourceWarning -m unittest discover -s . -t . -v
