@@ -1,0 +1,19 @@
+# Never commit anyone's network data or generated briefs.
+*.xlsx
+*.xls
+*.numbers
+*.csv
+!plugins/network-focus/examples/*.csv
+!plugins/network-focus/tests/fixtures/*.csv
+!plugins/network-focus/tests/fixtures/*.xlsx
+briefs/
+run-files/
+goals.md
+!plugins/network-focus/templates/goals.md
+!plugins/network-focus/tests/fixtures/goals.md
+!plugins/network-focus/examples/goals.md
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

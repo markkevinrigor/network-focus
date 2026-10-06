@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "network-focus",
+  "description": "Network Focus: a weekly relationship brief for a busy executive, built as a Claude Code plugin.",
+  "owner": {
+    "name": "Mark Kevin Rigor"
+  },
+  "plugins": [
+    {
+      "name": "network-focus",
+      "description": "Every Monday, turns the CEO's network roster and goals into a one-page brief: the 3 to 5 people to invest in this week, dormant relationships worth reopening, and the data problems that need a human.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mark Kevin Rigor"
+      },
+      "source": "./plugins/network-focus",
+      "category": "productivity"
+    }
+  ]
+}

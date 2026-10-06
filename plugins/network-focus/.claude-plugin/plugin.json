@@ -1,0 +1,10 @@
+{
+  "name": "network-focus",
+  "version": "0.1.0",
+  "description": "Every Monday, turns the CEO's network roster and goals into a one-page brief: the 3 to 5 people to invest in this week, dormant relationships worth reopening, and the data problems that need a human. Code reads and checks the facts; Claude does the judgment.",
+  "author": {
+    "name": "Mark Kevin Rigor"
+  },
+  "license": "MIT",
+  "keywords": ["relationships", "network", "crm", "executive", "weekly-brief", "chief-of-staff"]
+}

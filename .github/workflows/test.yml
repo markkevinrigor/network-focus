@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest      # the chief of staff's laptop; 3.9 is what macOS Command Line Tools ships
+            python: "3.9"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests (standard library only, includes a real one-page PDF render with the runner's Chrome)
+        working-directory: plugins/network-focus/tests
+        run: python -W error::ResourceWarning -m unittest discover -s . -t . -v
+      - name: Practice files through the real command line
+        working-directory: plugins/network-focus/examples
+        shell: bash
+        run: |
+          python ../scripts/nf.py doctor --quick
+          python ../scripts/nf.py prepare --roster practice-roster.csv --today 2026-10-06
+          set +e
+          python ../scripts/nf.py prepare --roster practice-roster-missing-column.csv --today 2026-10-06 | tee out.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" = "2" && grep -q "NF-03" out.txt
