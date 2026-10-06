@@ -17,6 +17,8 @@ claude plugin marketplace add markkevinrigor/network-focus
 claude plugin install network-focus@network-focus
 ```
 
+To update later: `claude plugin marketplace update network-focus`, then `claude plugin update network-focus@network-focus`, then restart Claude Code.
+
 Requirements: a Claude subscription, Python 3.9 or newer (macOS offers to install it the first time), and Google Chrome or Microsoft Edge (for the PDF). Nothing else to install: the scripts use only Python's standard library.
 
 ## Run it
