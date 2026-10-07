@@ -79,30 +79,47 @@ def _pdf_complete(path):
         return b"%%EOF" in f.read()
 
 
+def _retry(action, attempts=20, pause=0.25):
+    """Windows can keep a file locked for a moment after the process that wrote it has gone."""
+    import time
+    for i in range(attempts):
+        try:
+            return action()
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(pause)
+
+
 def print_pdf(browser, html_path, pdf_path, timeout=60):
     """Print with headless Chrome/Edge. Waits for a complete PDF rather than for the browser to exit:
-    on some systems the browser lingers after printing, and waiting on it would look like a failure."""
+    on some systems the browser lingers after printing, and waiting on it would look like a failure.
+
+    Chrome prints into its own temporary folder and the finished file is copied out, so a browser process that
+    still holds its file (seen on Windows) can never lock the PDF the operator gets, or the next print attempt."""
     import time
     profile = tempfile.mkdtemp(prefix="nf-chrome-")
+    out = os.path.join(profile, "print.pdf")
     proc = None
+    ok = False
     try:
         if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-        args = [browser] + CHROME_FLAGS + ["--user-data-dir=" + profile, "--print-to-pdf=" + pdf_path,
+            _retry(lambda: os.remove(pdf_path))
+        args = [browser] + CHROME_FLAGS + ["--user-data-dir=" + profile, "--print-to-pdf=" + out,
                                            Path(html_path).resolve().as_uri()]
         proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.time() + timeout
         last_size = -1
         while time.time() < deadline:
-            if _pdf_complete(pdf_path):
-                size = os.path.getsize(pdf_path)
+            if _pdf_complete(out):
+                size = os.path.getsize(out)
                 if size == last_size:
                     break  # complete and no longer growing
                 last_size = size
-            elif proc.poll() is not None and not os.path.exists(pdf_path):
+            elif proc.poll() is not None and not os.path.exists(out):
                 break  # browser exited without printing
             time.sleep(0.25)
-        return _pdf_complete(pdf_path)
+        ok = _pdf_complete(out)
     finally:
         if proc is not None and proc.poll() is None:
             proc.terminate()
@@ -110,7 +127,12 @@ def print_pdf(browser, html_path, pdf_path, timeout=60):
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if ok:
+            data = _retry(lambda: read_bytes(out))
+            with open(pdf_path, "wb") as f:
+                f.write(data)
         shutil.rmtree(profile, ignore_errors=True)
+    return ok
 
 
 def fmt_day(iso):
@@ -410,7 +432,7 @@ def main(run_dir, out, audit_unresolved=""):
     browser = find_browser()
 
     if os.path.exists(pdf_path):
-        os.remove(pdf_path)  # never leave an earlier PDF looking like this run's result
+        _retry(lambda: os.remove(pdf_path))  # never leave an earlier PDF looking like this run's result
     tmp_pdf = os.path.join(week_dir, stem + ".printing.pdf")
     pages = None
     reviewer = reviewer_line(audit, audit_unresolved)
@@ -426,10 +448,10 @@ def main(run_dir, out, audit_unresolved=""):
             return EXIT_BLOCKED
         pages = count_pages(tmp_pdf)
         if pages <= 1:
-            os.replace(tmp_pdf, pdf_path)
+            _retry(lambda: os.replace(tmp_pdf, pdf_path))
             break
     if os.path.exists(tmp_pdf):
-        os.remove(tmp_pdf)  # a two-page draft is never handed to the operator
+        _retry(lambda: os.remove(tmp_pdf))  # a two-page draft is never handed to the operator
     outputs = [html_path] + ([pdf_path] if browser and pages == 1 else [])
     if browser and pages and pages > 1:
         out("TOO LONG the brief runs to %d pages at the smallest allowed font. Shorten 'why', 'move.action' and 'risk' "
