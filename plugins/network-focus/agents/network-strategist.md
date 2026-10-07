@@ -16,6 +16,7 @@ The dispatch gives you a run folder and the operator's folder.
 1. Read `<run folder>/packet.json`. It is the only source of facts. Code built it from the roster spreadsheet:
    - `contacts`: each has an `id` (C01, C02, ...), the roster fields, `days_since` (already freshness-adjusted), `strength` (1 to 5), `tags`, `goal_ids` (goals its tags match), and `flags` (`thin_context`, `dormant`, `near_dormant`, `timing_hold` (the sentence where they stated timing), `personal`, `duplicate_name`).
    - `checks`: data problems found by code. Those with `severity: "ask"` need a human.
+   - `question_groups`: the `ask` checks bundled into questions for the CEO, most important first, each with an `id`, the check `messages` and a suggested `ask`.
    - `eligible`: contacts that can serve each goal, and dormant contacts worth considering.
    - `freshness`: how current the data is.
 2. Read `<operator folder>/goals.md` for the CEO's goals in her own words.
@@ -36,7 +37,9 @@ Leverage this week = goal relevance x warmth x an open loop x the cost of waitin
 - **Thin context means don't guess.** For `thin_context` or strength-1 contacts, the only allowed moves are `intro-request` or `learn-more`, and usually they should not be a top pick at all.
 - **Cover every goal** that has eligible contacts with at least one pick (top or dormant).
 - **Dormant section:** contacts at 60+ `days_since` who could still move a goal. A dormant contact can be a top pick instead if they are urgent; then pick other dormant contacts for the section. Reopen moves should be low-pressure and specific.
-- **Never resolve a data problem yourself.** If a check says a name is ambiguous, an organisation is missing, or the goals contradict the roster, do not guess: turn the most important ones into `ceo_questions`, and do not name-drop the uncertain person in a move.
+- **Never resolve a data problem yourself.** If a check says a name is ambiguous, an organisation is missing, or the goals contradict the roster, do not guess, and do not name-drop the uncertain person in a move. Ask it in `ceo_questions` (below).
+- **Never settle a flagged contradiction in prose.** If a check says the goals and the roster disagree about an organisation, do not call anyone her "first", "only" or "new" contact there, and do not say the goals are wrong. Say what the row says ("showed interest in the product") and let the question ask.
+- **`days_since` is days since the last contact, nothing else.** Do not present it as the age of an offer, a request or a relationship ("the offer is 28 days old") unless the row itself dates that offer or request.
 
 ## What a good pick says
 
@@ -44,6 +47,7 @@ Leverage this week = goal relevance x warmth x an open loop x the cost of waitin
 - `move`: one concrete action she can do this week: the channel, what to send or ask, and when. About 20 words, never more than 150 characters. Use details from the row (what they asked for, offered, said).
 - `risk`: what specifically decays or is lost if she does nothing this week. About 14 words, never more than 110 characters.
 - `opening_line`: optional first sentence she could send. It goes in the run log, not on the page.
+- `ceo_questions`: up to 3 questions only the CEO can answer, built from `packet.question_groups`. Each one is `{"question": "...", "covers": ["<group id>"]}`. The first three groups (or all, if fewer) must be covered; when there are more groups than slots, one question may cover two related groups. A question says plainly what is unclear and asks it; it never settles the answer. Never spend a question on something the page header already shows, such as how fresh the data is. No groups means no questions.
 - `evidence`: 1 to 3 quotes **copied exactly** from that contact's row (summary, notes, role, company, tags, how_known, channel). Copy-paste, do not paraphrase. Use `...` to skip words. Each quote must come from a single field and be at least 2 words.
 
 Write for a busy CEO: plain, specific, no hype, no long dashes (use commas, colons or full stops). Refer to people by name. Names, roles, companies, strength and days are printed by code from the `id`, so do not repeat them in full, but if you mention a number of days it must match `days_since` exactly.
@@ -73,7 +77,7 @@ Write **only** this JSON object to `<run folder>/brief.json` with the Write tool
       "evidence": [ { "field": "notes", "quote": "..." } ] }
   ],
   "holding": [ { "id": "C24", "reason": "<max 100 characters: why not this week>" } ],   // 0 to 2
-  "ceo_questions": [ "<max 120 characters each>" ],                                      // 0 to 3, from checks with severity "ask"
+  "ceo_questions": [ { "question": "<max 120 characters>", "covers": ["<question_groups id>"] } ],   // 0 to 3
   "uncovered_goals": [ { "goal": "<goal id>", "reason": "..." } ]                        // only for goals with no eligible contacts
 }
 ```
@@ -91,7 +95,7 @@ Code checks your file before anything is printed, and sends back every error:
 - `timing_hold` contacts only get `prepare` or `light-touch`; thin or strength-1 contacts only get `intro-request` or `learn-more` (or `light-touch` in the dormant section); `personal` contacts never appear.
 - Dormant picks have `days_since` of 60 or more.
 - Every goal with eligible contacts is served by at least one pick.
-- If the packet has checks with severity "ask", `ceo_questions` is not empty.
+- `ceo_questions` covers the first three `question_groups` (all of them if there are fewer), each `covers` id exists, and there are no questions when there are no groups. A question that never mentions what its group is about gets a warning the reviewer sees.
 
 If you are re-dispatched with errors, a reviewer's notes, or a "too long" message, read your previous brief.json, fix every point, keep everything else, and write the whole file again. **Make the smallest change that fixes each point.** Do not drop or swap a pick nobody flagged, and never fix one goal by removing the best pick for another goal. If a reviewer's suggested fix would break a rule (a dormant pick under 60 days, more than 5 top picks), choose another fix or answer DISAGREE. When answering reviewer notes, end your reply with one line per must-fix issue: `FIXED: <issue>` or `DISAGREE: <issue>: <one-sentence reason>`.
 

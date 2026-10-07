@@ -183,6 +183,17 @@ def unknown_single_names(text, known):
     return out
 
 
+def _plain(text):
+    t = norm(text).replace("'s ", " ")
+    return " %s " % re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def has_anchor(text, anchor):
+    """True if the anchor appears as whole words ("ARC" in "ARC's researchers", not in "search")."""
+    a = _plain(anchor).strip()
+    return bool(a) and (" %s " % a) in _plain(text + " ")
+
+
 def check(brief, packet):
     errors, warnings = [], []
     contacts = {c["id"]: c for c in packet["contacts"]}
@@ -346,13 +357,43 @@ def check(brief, packet):
         check_text(where, "reason", item.get("reason"), LIMITS["reason"], contacts[cid])
 
     qs = sections["ceo_questions"]
-    if len(qs) > packet["rules"]["ceo_questions_max"]:
-        err("ceo_questions", "at most %d questions." % packet["rules"]["ceo_questions_max"])
+    groups = packet.get("question_groups") or []
+    by_gid = {g["id"]: g for g in groups}
+    qmax = packet["rules"]["ceo_questions_max"]
+    if len(qs) > qmax:
+        err("ceo_questions", "at most %d questions." % qmax)
+    if qs and not groups:
+        err("ceo_questions", "no data problem needs the CEO this week (packet.question_groups is empty), so leave ceo_questions empty.")
+    covered = set()
     for i, q in enumerate(qs):
-        check_text("ceo_questions[%d]" % (i + 1), "question", q, LIMITS["question"])
-    asks = [c for c in packet["checks"] if c["severity"] == "ask" and c["kind"] != "freshness"]
-    if asks and not qs:
-        err("ceo_questions", "the packet has %d check(s) that need the CEO's input; turn the most important into questions." % len(asks))
+        where = "ceo_questions[%d]" % (i + 1)
+        if not isinstance(q, dict):
+            err(where, 'must be an object: {"question": "...", "covers": ["<id from packet.question_groups>"]}.')
+            continue
+        check_text(where, "question", q.get("question"), LIMITS["question"])
+        cov = q.get("covers")
+        if not isinstance(cov, list) or not cov or not all(isinstance(x, str) for x in cov):
+            err(where, "'covers' must list the packet.question_groups id(s) this question asks about.")
+            continue
+        if len(set(cov)) != len(cov):
+            err(where, "'covers' lists the same group twice.")
+        text = q.get("question") if isinstance(q.get("question"), str) else ""
+        for gid in cov:
+            g = by_gid.get(gid)
+            if g is None:
+                err(where, "'covers' has %r, which is not an id in packet.question_groups (%s)." % (gid, ", ".join(by_gid) or "none"))
+                continue
+            if gid in covered:
+                warn(where, "group %s is already asked by another question; merge them to save a slot." % gid)
+            covered.add(gid)
+            for msg, anchors in zip(g["messages"], g["anchors"]):
+                if anchors and not any(has_anchor(text, a) for a in anchors):
+                    warn(where, "covers %s but never mentions %s; make sure it really asks: %s" % (gid, " or ".join("'%s'" % a for a in anchors[:3]), msg))
+    missing = [g for g in groups[:qmax] if g["id"] not in covered]
+    if missing:
+        err("ceo_questions", "these data problems must be asked (they are the most important %d; merge related ones into one "
+            "question if you are short of slots): %s"
+            % (min(len(groups), qmax), " | ".join("%s: %s Suggested question: %s" % (g["id"], " ".join(g["messages"]), g["ask"]) for g in missing)))
 
     covered = set()
     for item in tops + dorm:

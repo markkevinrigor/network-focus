@@ -128,11 +128,11 @@ class ValidateTests(Base):
 
 
 class RunTests(Base):
-    def run_dir(self, brief_obj=None, raw=None):
+    def run_dir(self, brief_obj=None, raw=None, packet=None):
         d = tempfile.mkdtemp()
         rd = os.path.join(d, "run-files")
         os.makedirs(rd)
-        pk = dict(self.packet, run_dir=rd)
+        pk = dict(packet or self.packet, run_dir=rd)
         write_json(os.path.join(rd, "packet.json"), pk)
         with open(os.path.join(rd, "brief.json"), "w", encoding="utf-8") as f:
             f.write(raw if raw is not None else json.dumps(brief_obj or self.brief()))
@@ -169,45 +169,62 @@ class RunTests(Base):
             self.assertEqual(code, EXIT_BLOCKED)  # NF-06, HTML still written
 
     def worst_case(self, scale=1.0):
-        """Every section full and every field at its character cap (times scale), plus the review banner."""
+        """Every text field at its target length (times scale), 4 goals (one with nobody eligible), long roles and
+        companies, every section full, the review banner and the longest footer. Returns (brief, packet).
+
+        Up to 10% over a target is accepted with a warning; when that overflows the page, the fact check's own print
+        test says TOO LONG (test_page_fit_is_part_of_the_fact_check), so nothing two pages long is ever printed."""
         L = {k: int(v * scale) for k, v in nf_validate.LIMITS.items()}
         words = "Offered to share three sales leader profiles and is still waiting for a reply from the whole team "
 
         def fill(n):
             return (words * 6)[:n]
+        packet = copy.deepcopy(self.packet)
+        packet["goals"].append({"id": "board", "title": "Recruit an independent board director", "label": "Independent director",
+                                "what": "Add one independent director before the Series B closes.", "tags": ["board"],
+                                "known_orgs": [], "wanted_orgs": []})
+        packet["eligible"]["by_goal"]["board"] = []
         b = self.brief()
         b["headline"] = fill(L["headline"])
         for t in b["top_picks"]:
             t["why"], t["move"]["action"], t["risk"] = fill(L["why"]), fill(L["action"]), fill(L["risk"])
         extra = copy.deepcopy(b["top_picks"][0])
-        extra.update(id="C02", goals=["vp-sales"], evidence=[{"field": "summary", "quote": "Compared notes on hiring"}])
+        extra.update(id="C02", goals=["vp-sales", "climate"], evidence=[{"field": "summary", "quote": "Compared notes on hiring"}])
         b["top_picks"].append(extra)
+        for t in b["top_picks"]:
+            c = [x for x in packet["contacts"] if x["id"] == t["id"]][0]
+            c["role"], c["company"] = "Senior Vice President, Global Talent and Search", "Kestrel Capital Management Partners"
         for d in b["dormant"]:
             d["why"], d["move"]["action"] = fill(L["dormant_why"]), fill(L["dormant_action"])
         extra = copy.deepcopy(b["dormant"][0])
         extra.update(id="C04", goals=["climate"], evidence=[{"field": "summary", "quote": "Met at a panel on grid data"}])
         b["dormant"].append(extra)
         b["holding"] = [{"id": "C10", "reason": fill(L["reason"])}, {"id": "C08", "reason": fill(L["reason"])}]
-        b["ceo_questions"] = [fill(L["question"])] * 3
-        return b
+        for q in b["ceo_questions"]:
+            q["question"] = fill(L["question"])
+        b["uncovered_goals"] = [{"goal": "board", "reason": fill(100)}]
+        return b, packet
 
     @unittest.skipUnless(nf_render.find_browser(), "needs Chrome or Edge")
     def test_a_brief_at_every_cap_still_prints_on_one_page(self):
-        b = self.worst_case()
-        self.assertEqual(self.errors(b), [])
+        b, packet = self.worst_case()
+        self.assertEqual(nf_validate.check(b, packet)[0], [])
         d = tempfile.mkdtemp()
         html_path, pdf_path = os.path.join(d, "w.html"), os.path.join(d, "w.pdf")
         with open(html_path, "w", encoding="utf-8") as f:
-            f.write(nf_render.build_html(b, self.packet, {"sha256": "0" * 12}, 9.0, "An unresolved reviewer issue."))
+            font_pt, compact = nf_render.LAYOUTS[-1]
+            f.write(nf_render.build_html(b, packet, {"sha256": "0" * 64}, font_pt, nf_render.FIT_BANNER,
+                                         reviewer=nf_render.FIT_REVIEWER, compact=compact))
         self.assertTrue(nf_render.print_pdf(nf_render.find_browser(), html_path, pdf_path))
         self.assertEqual(nf_render.count_pages(pdf_path), 1)
+        self.assertEqual(nf_render.page_count_at_floor(b, packet), 1)
 
     @unittest.skipUnless(nf_render.find_browser(), "needs Chrome or Edge")
     def test_page_fit_is_part_of_the_fact_check(self):
-        b = self.worst_case(scale=1.6)  # over every cap: fails on length and, separately, on one page
+        b, packet = self.worst_case(scale=1.6)  # over every cap: fails on length and, separately, on one page
         nf_validate.LIMITS, saved = {k: 10 ** 4 for k in nf_validate.LIMITS}, nf_validate.LIMITS
         try:
-            rd = self.run_dir(b)
+            rd = self.run_dir(b, packet=packet)
             self.assertEqual(nf_validate.main(rd, lambda s: None), EXIT_CHECK_FAILED)
             self.assertIn("TOO LONG", read_text(os.path.join(rd, "validation.json")))
         finally:

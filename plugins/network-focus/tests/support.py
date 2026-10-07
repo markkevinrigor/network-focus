@@ -187,6 +187,14 @@ def good_brief(week_of):
              "evidence": [{"field": "notes", "quote": "offered intros last spring"}]},
         ],
         "holding": [],
-        "ceo_questions": ["Who is your Harrow Capital contact? Nobody from there is in the roster."],
+        # Four question groups in this data; the top three must be asked, the duplicate name is left to the run log.
+        "ceo_questions": [
+            {"question": "Who is your Harrow Capital contact? Nobody from there is in the roster.",
+             "covers": ["missing-org:series-b"]},
+            {"question": "Goals say no climate academics yet, but Riley Chen at Climate Lab is on file. Are the goals out of date?",
+             "covers": ["contradiction:climate"]},
+            {"question": "Who is Jordan at Kestrel Capital? Check before thanking anyone for the intro.",
+             "covers": ["who:jordan-kestrel-capital"]},
+        ],
         "uncovered_goals": [],
     }

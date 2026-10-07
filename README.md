@@ -6,6 +6,8 @@ A Claude Code plugin that turns an executive's network roster and quarterly goal
 - **Dormant, still worth reopening:** 2 to 3 people she hasn't spoken to in 60+ days who could still move a goal.
 - **Needs your input / Holding:** data problems a human must settle (a goal organisation nobody on file works at, a note that names someone who isn't in the roster, goals that contradict the roster), and people who asked her to wait.
 
+A strip at the top shows the week by goal, every move has a checkbox so the page doubles as the planning-meeting agenda, and the footer carries the plugin version, the brief's fingerprint and the reviewer's verdict.
+
 It is built to be run by a chief of staff who does not write code.
 
 ## Install (two commands)
@@ -39,20 +41,23 @@ Roster columns (other spellings are recognised): Name, Role, Company, How She Kn
 roster.xlsx + goals.md
       |
   nf.py prepare        Python, no model: reads the sheet, gives every row an ID, matches tags to goals,
-      |                flags thin context / dormant / stated timing / duplicates, and finds data problems
+      |                flags thin context / dormant / stated timing / duplicates, finds data problems
   packet.json          (goal organisations missing from the roster, notes that name unknown people, ...)
+      |                and ranks them into question groups for the CEO, most important first
       |
   network-strategist   sub-agent (Opus, read + write only): picks people and moves, cites roster words
       |
   brief.json
       |
-  nf.py validate       Python: every quote is in that person's row, no invented names, day counts match,
-      |                timing and weak-tie rules, goal coverage, and a real print test: it must fit one page.
+  nf.py validate       Python: every quote is in that person's row, no invented full names, "N days ago" claims
+      |                match the row, timing and weak-tie rules, goal coverage, the top 3 question groups are
+      |                asked, and a real print test: it must fit one page.
       |                Failures go back to the strategist once; a second failure stops with NF-07.
   brief-auditor        sub-agent (Sonnet, fresh context): judgment review; must-fix issues get one revision
       |
   nf.py render         Python: refuses a brief or data file that differs from the validated one (sha256), prints
-                       names/roles/days from the row IDs, one Letter page via headless Chrome or Edge
+                       names/roles/strength/days from the row IDs, one Letter page via headless Chrome or Edge
+                       (10pt, then 9.5, then 9; the last step tightens spacing and drops the goal strip)
 ```
 
 | Piece | File |
@@ -85,7 +90,7 @@ cd plugins/network-focus/tests
 python -m unittest discover -s . -t .
 ```
 
-CI runs the tests on macOS (Python 3.9) and Windows, including a real PDF render. No real network data belongs in this repository: `.gitignore` excludes spreadsheets, `goals.md` and generated briefs, and the tests use a made-up company.
+CI runs the tests on macOS (Python 3.9) and Windows, including a real PDF render. One test prints a brief with every field at its target length, five picks, three dormant, four goals, long job titles and the review banner, and requires one page at 9pt. Fields may run up to 10% over a target with a warning; if that overflows the page, the fact check's own print test returns TOO LONG and the strategist shortens it. Changes are listed in `CHANGELOG.md`. No real network data belongs in this repository: `.gitignore` excludes spreadsheets, `goals.md` and generated briefs, and the tests use a made-up company.
 
 ## Not built (yet)
 

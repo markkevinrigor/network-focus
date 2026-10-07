@@ -228,6 +228,20 @@ def describe(c):
     return "%s (%s)" % (c["name"], ", ".join(b for b in bits if b)) if any(bits) else c["name"]
 
 
+def org_anchors(org, hits=()):
+    """Words a question about this organisation should contain: its names and tags, plus the roster rows it matched
+    (goals text "university climate groups (tag: academic)" matched by a row at "Climate Lab" can be asked about either way)."""
+    out = list(org["aliases"]) + list(org["tags"])
+    for c in hits:
+        out += [c["name"], c["company"], c["company"].split(" ")[0]]
+    seen, anchors = set(), []
+    for a in out:
+        if a and a.lower() not in seen:
+            seen.add(a.lower())
+            anchors.append(a)
+    return anchors
+
+
 def goal_checks(goals, contacts):
     checks = []
     for g in goals:
@@ -238,7 +252,8 @@ def goal_checks(goals, contacts):
                 checks.append({
                     "kind": "goal-org-missing", "severity": "ask", "goal": g["id"], "ids": [],
                     "message": "Goals say she already has a way into %s, but nobody in the roster works there." % org["label"],
-                    "ask": "Who is her %s contact? Add them to the roster so the brief can include them." % org["label"]})
+                    "ask": "Who is her %s contact? Add them to the roster so the brief can include them." % org["label"],
+                    "anchors": org_anchors(org)})
         for org in g["wanted_orgs"]:
             hits = [c for c in contacts if any(org_matches(a, c["company"]) for a in org["aliases"])
                     or any(t in c["tags"] for t in org["tags"])]
@@ -247,7 +262,8 @@ def goal_checks(goals, contacts):
                     "kind": "goal-org-found", "severity": "ask", "goal": g["id"], "ids": [c["id"] for c in hits],
                     "message": "Goals say she has no contact at %s yet, but the roster has %s."
                                % (org["label"], ", ".join(describe(c) for c in hits)),
-                    "ask": "Is the goals text out of date, or are these not the right kind of contact?"})
+                    "ask": "Is the goals text out of date, or are these not the right kind of contact?",
+                    "anchors": org_anchors(org, hits)})
             else:
                 checks.append({
                     "kind": "goal-org-gap", "severity": "info", "goal": g["id"], "ids": [],
@@ -288,8 +304,10 @@ def reference_checks(contacts):
                 "nobody in the roster works at %s" % org)
             checks.append({
                 "kind": "unresolved-reference", "severity": "ask", "ids": [c["id"]] + [o["id"] for o in named + at_org],
+                "person": person, "org": org,
                 "message": "%s's notes mention \"%s at %s\". %s, and %s." % (c["name"], person, org, who, org_side),
-                "ask": "Who is %s at %s? Check before thanking or name-dropping anyone." % (person, org)})
+                "ask": "Who is %s at %s? Check before thanking or name-dropping anyone." % (person, org),
+                "anchors": [person, org]})
     return checks
 
 
@@ -301,10 +319,11 @@ def roster_checks(contacts):
             seen.add(c["name"].lower())
             dups = [o for o in contacts if o["name"].lower() == c["name"].lower()]
             checks.append({
-                "kind": "duplicate-name", "severity": "ask", "ids": [o["id"] for o in dups],
+                "kind": "duplicate-name", "severity": "ask", "ids": [o["id"] for o in dups], "name": c["name"],
                 "message": "%d rows are named %s: %s. The brief treats them as different people and always shows the company."
                            % (len(dups), c["name"], "; ".join("%s (row %d)" % (describe(o), o["row"]) for o in dups)),
-                "ask": "Are these the same person? If so, delete the older row before next week."})
+                "ask": "Are these the same person? If so, delete the older row before next week.",
+                "anchors": [c["name"]]})
     thin = [c for c in contacts if c["flags"]["thin_context"]]
     if thin:
         checks.append({"kind": "thin-context", "severity": "info", "ids": [c["id"] for c in thin],
@@ -322,6 +341,58 @@ def roster_checks(contacts):
     return checks
 
 
+# ---------------------------------------------------------------- questions for the CEO
+
+# Goal-level problems first: a stray ambiguous name must never push a goal contradiction off the page.
+GROUP_ORDER = ["missing-org", "contradiction", "who", "duplicate", "goals-stale"]
+GROUP_OF = {"goal-org-missing": "missing-org", "goal-org-found": "contradiction", "unresolved-reference": "who",
+            "duplicate-name": "duplicate", "goals-stale": "goals-stale"}
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-") or "x"
+
+
+def question_groups(checks, goals):
+    """Bundle the checks that need the CEO into groups, most important first.
+
+    Related checks become one group (two "she has no contact at X yet" contradictions under the same goal are one
+    question). The validator requires the strategist to ask the top groups, so which questions reach the page is
+    decided here, in code, not by the model.
+    """
+    goal_rank = {g["id"]: i for i, g in enumerate(goals)}
+    groups, by_key = [], {}
+    for chk in checks:
+        family = GROUP_OF.get(chk["kind"])
+        if chk["severity"] != "ask" or not family:
+            continue
+        if family in ("missing-org", "contradiction"):
+            key = "%s:%s" % (family, chk.get("goal") or "goals")
+        elif family == "who":
+            key = "who:%s-%s" % (slug(chk.get("person")), slug(chk.get("org")))
+        elif family == "duplicate":
+            key = "duplicate:%s" % slug(chk.get("name"))
+        else:
+            key = family
+        if key not in by_key:
+            gid, n = key, 2
+            while gid in {g["id"] for g in groups}:
+                gid, n = "%s-%d" % (key, n), n + 1
+            by_key[key] = {"id": gid, "kind": family, "goal": chk.get("goal"), "messages": [], "asks": [], "anchors": [],
+                           "_rank": (GROUP_ORDER.index(family), goal_rank.get(chk.get("goal"), len(goal_rank)), len(groups))}
+            groups.append(by_key[key])
+        g = by_key[key]
+        g["messages"].append(chk["message"])
+        if chk.get("ask") and chk["ask"] not in g["asks"]:
+            g["asks"].append(chk["ask"])
+        g["anchors"].append(chk.get("anchors") or [])
+    groups.sort(key=lambda g: g["_rank"])
+    for g in groups:
+        del g["_rank"]
+        g["ask"] = " ".join(g.pop("asks"))
+    return groups
+
+
 # ---------------------------------------------------------------- the packet
 
 def build_packet(roster, goals_doc, today, as_of=None, use_as_is=False):
@@ -331,9 +402,9 @@ def build_packet(roster, goals_doc, today, as_of=None, use_as_is=False):
     if not contacts:
         raise NFError("NF-03", "The roster has no rows with a name in them.",
                       "Check you exported the roster sheet with its data, then run again.")
-    checks = [{"kind": "freshness", "severity": "info" if freshness["status"] != "unconfirmed" else "ask", "ids": [],
-               "message": freshness["message"],
-               "ask": "If this export is older than it looks, run again with as-of=YYYY-MM-DD (the export date)."
+    # Freshness is printed in the brief's header and told to the operator; it is never a question for the CEO.
+    checks = [{"kind": "freshness", "severity": "info", "ids": [], "message": freshness["message"], "ask": None,
+               "operator_action": "If this export is older than it looks, run again with as-of=YYYY-MM-DD (the export date)."
                if freshness["status"] == "unconfirmed" else None}] + checks
     if roster["columns_missing"]:
         from nf_read import PRETTY
@@ -344,7 +415,7 @@ def build_packet(roster, goals_doc, today, as_of=None, use_as_is=False):
     if goals_doc.get("last_reviewed") and (today - goals_doc["last_reviewed"]).days > GOALS_REVIEW_DAYS:
         checks.append({"kind": "goals-stale", "severity": "ask", "ids": [],
                        "message": "goals.md was last reviewed %s." % fmt_date(goals_doc["last_reviewed"]),
-                       "ask": "Are these still the CEO's goals this quarter?"})
+                       "ask": "Are these still the CEO's goals this quarter?", "anchors": ["goals", "goal"]})
 
     eligible_by_goal = {g["id"]: [c["id"] for c in contacts if g["id"] in c["goal_ids"] and not c["flags"]["thin_context"]]
                         for g in goals}
@@ -364,6 +435,7 @@ def build_packet(roster, goals_doc, today, as_of=None, use_as_is=False):
                    "wanted_orgs": [o["label"] for o in g["wanted_orgs"]]} for g in goals],
         "contacts": contacts,
         "checks": checks,
+        "question_groups": question_groups(checks, goals),
         "eligible": {"by_goal": eligible_by_goal, "dormant": eligible_dormant},
         "rules": {"dormant_days": DORMANT_DAYS, "top_picks": [3, 5], "dormant_picks": [2, 3], "holding_max": 2,
                   "ceo_questions_max": 3},

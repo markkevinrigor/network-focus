@@ -118,12 +118,16 @@ def fmt_day(iso):
     return "%d %s %d" % (d.day, d.strftime("%b"), d.year)
 
 
+def goal_index(goal_id, goals):
+    ids = [x["id"] for x in goals]
+    return (ids.index(goal_id) if goal_id in ids else 0) % 5
+
+
 def chips(goal_ids, goals):
     out = []
     for g in goal_ids:
-        idx = [x["id"] for x in goals].index(g) if g in [x["id"] for x in goals] else 0
         goal = next((x for x in goals if x["id"] == g), {"title": g})
-        out.append('<span class="chip g%d">%s</span>' % (idx % 5, esc(short_goal(goal))))
+        out.append('<span class="chip c%d">%s</span>' % (goal_index(g, goals), esc(short_goal(goal))))
     return " ".join(out)
 
 
@@ -132,15 +136,42 @@ def short_goal(goal):
     return t if len(t) <= 24 else t[:22].rstrip() + "..."
 
 
+def dots(strength):
+    return '<span class="dots" title="relationship strength %d of 5">%s</span>' % (
+        strength, "".join('<i class="on"></i>' if i < strength else "<i></i>" for i in range(5)))
+
+
 def facts(c, channel=True):
+    """Strength as five dots, then recency: all from the roster row."""
     bits = []
     if c.get("strength") is not None:
-        bits.append("strength %d/5" % c["strength"])
+        bits.append("strength" + dots(c["strength"]))
     if c.get("days_since") is not None:
-        bits.append("%d days" % c["days_since"])
-    if channel and c.get("channel"):
-        bits.append("last: %s" % c["channel"])
-    return " &middot; ".join(esc(b) for b in bits)
+        days = "%d day%s ago" % (c["days_since"], "" if c["days_since"] == 1 else "s")
+        if channel and c.get("channel"):
+            days += " &middot; " + esc(c["channel"])
+        bits.append(days)
+    return " &middot; ".join(bits)
+
+
+def plugin_version():
+    try:
+        return read_json(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")).get("version") or ""
+    except (OSError, ValueError):
+        return ""
+
+
+def question_text(q):
+    return q.get("question", "") if isinstance(q, dict) else str(q)
+
+
+def covered_groups(brief, packet):
+    covered = set()
+    for q in brief.get("ceo_questions") or []:
+        if isinstance(q, dict) and isinstance(q.get("covers"), list):
+            covered.update(x for x in q["covers"] if isinstance(x, str))
+    groups = packet.get("question_groups") or []
+    return [g for g in groups if g["id"] in covered], [g for g in groups if g["id"] not in covered]
 
 
 def role_line(c):
@@ -153,55 +184,106 @@ def as_list(unresolved):
     return [unresolved] if isinstance(unresolved, str) else [u for u in unresolved if u]
 
 
-def build_html(brief, packet, validation, font_pt, unresolved):
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+# Tried in order; the first that prints on one page wins. 9pt is the floor. The last step keeps 9pt but tightens
+# spacing and drops the goal strip; it is the step the fact check's one-page test uses.
+LAYOUTS = ((10.0, False), (9.5, False), (9.0, False), (9.0, True))
+# The fact check runs before the reviewer, so it reserves room for the longest footer and a one-line banner.
+FIT_REVIEWER = "revise, 3 issues open (see banner)"
+FIT_BANNER = ["One reviewer issue to check by hand before the meeting, about a line long."]
+
+
+def goal_strip(brief, packet, contacts, goals):
+    """One tile per goal: who this brief recommends for it (names from the roster), and questions on the page.
+    Which goal a pick serves is the strategist's judgment, so the strip says "picks", not "contacts"."""
+    group_goal = {grp["id"]: grp.get("goal") for grp in packet.get("question_groups") or []}
+    questions = [q for q in brief.get("ceo_questions") or [] if isinstance(q, dict) and isinstance(q.get("covers"), list)]
+    tiles = []
+    for g in goals:
+        tops = [(i, contacts[p["id"]]["name"]) for i, p in enumerate(brief["top_picks"], start=1) if g["id"] in (p.get("goals") or [])]
+        dorm = [contacts[p["id"]]["name"] for p in brief.get("dormant") or [] if g["id"] in (p.get("goals") or [])]
+        # Count printed questions, not groups: one question may cover two of this goal's problems.
+        asks = sum(1 for q in questions if any(group_goal.get(x) == g["id"] for x in q["covers"]))
+        cls = "goal c%d" % goal_index(g["id"], goals)
+        if tops:
+            people = ", ".join("<b>%d</b> %s" % (i, esc(n)) for i, n in tops)
+        elif dorm:
+            people = "Reopen: " + ", ".join(esc(n) for n in dorm)
+        else:
+            cls += " none"  # the fact check only allows this when no eligible contact can serve the goal
+            people = "No eligible contact this week"
+        extra = []
+        if tops and dorm:
+            extra.append("+%d dormant" % len(dorm))
+        if asks:
+            extra.append('<span class="ask">%d question%s for you</span>' % (asks, "" if asks == 1 else "s"))
+        tiles.append('<div class="%s"><div class="gl">%s</div><div class="gp">%s</div>%s</div>'
+                     % (cls, esc(short_goal(g)), people, '<div class="gx">%s</div>' % " &middot; ".join(extra) if extra else ""))
+    return "\n".join(tiles)
+
+
+def build_html(brief, packet, validation, font_pt, unresolved, reviewer=None, compact=False):
     unresolved = as_list(unresolved)
     contacts = {c["id"]: c for c in packet["contacts"]}
     goals = packet["goals"]
     tpl = string.Template(read_text(os.path.join(PLUGIN_ROOT, "templates", "brief.html")))
 
+    def move_html(p):
+        return ('<div class="move"><span class="tick"></span><span class="mtype">%s</span>%s</div>'
+                % (esc(p["move"]["type"].replace("-", " ")), esc(p["move"]["action"])))
+
     picks = []
     for i, p in enumerate(brief["top_picks"], start=1):
         c = contacts[p["id"]]
         picks.append(
-            '<li class="pick"><div class="who"><span class="num">%d</span><span class="name">%s</span>'
+            '<li class="pick c%d"><div class="who"><span class="num">%d</span><span class="name">%s</span>'
             '<span class="role">%s</span>%s<span class="facts">%s</span></div>'
-            '<div class="grid"><div>%s</div>'
-            '<div><span class="mtype">%s</span>%s</div>'
-            '<div>%s</div></div></li>'
-            % (i, esc(c["name"]), esc(role_line(c)), chips(p["goals"], goals), facts(c), esc(p["why"]),
-               esc(p["move"]["type"].replace("-", " ")), esc(p["move"]["action"]), esc(p["risk"])))
+            '<div class="grid"><div>%s</div>%s<div>%s</div></div></li>'
+            % (goal_index((p.get("goals") or [""])[0], goals), i, esc(c["name"]), esc(role_line(c)),
+               chips(p["goals"], goals), facts(c), esc(p["why"]), move_html(p), esc(p["risk"])))
     dormant = []
     for p in brief["dormant"]:
         c = contacts[p["id"]]
+        strength = (" &middot; strength" + dots(c["strength"])) if c.get("strength") is not None else ""
         dormant.append(
-            '<tr><td class="d-who"><span class="name">%s</span><br><span class="role">%s</span><br>%s <span class="facts">%s</span></td>'
-            '<td class="d-why">%s</td><td><span class="mtype">%s</span>%s</td></tr>'
-            % (esc(c["name"]), esc(role_line(c)), chips(p["goals"], goals), facts(c, channel=False), esc(p["why"]),
-               esc(p["move"]["type"].replace("-", " ")), esc(p["move"]["action"])))
+            '<div class="drow"><div><span class="name">%s</span><span class="quiet">%s days quiet</span><br>'
+            '<span class="role">%s</span><br>%s<span class="facts">%s</span></div><div>%s</div>%s</div>'
+            % (esc(c["name"]), esc(c["days_since"]), esc(role_line(c)), chips(p["goals"], goals), strength,
+               esc(p["why"]), move_html(p)))
     if not dormant:
-        dormant.append('<tr><td colspan="3">No one at 60+ days is worth reopening this week.</td></tr>')
+        dormant.append('<p class="role">No one at 60+ days is worth reopening this week.</p>')
+
     labels = {g["id"]: g.get("label") or g["title"] for g in goals}
     uncovered = ["<li>No one on file can serve the %s goal: %s</li>" % (esc(labels.get(u.get("goal"), u.get("goal"))), esc(u.get("reason")))
                  for u in brief.get("uncovered_goals") or [] if isinstance(u, dict)]
-    questions = "".join(uncovered + ["<li>%s</li>" % esc(q) for q in brief.get("ceo_questions") or []]) or "<li>Nothing this week.</li>"
+    asked = ["<li>%s</li>" % esc(question_text(q)) for q in brief.get("ceo_questions") or []]
+    _, left_over = covered_groups(brief, packet)
+    more = ['<li class="more">+%d more data question%s in run-log.md</li>' % (len(left_over), "" if len(left_over) == 1 else "s")] if left_over else []
+    questions = "".join(uncovered + asked + more) or "<li>Nothing this week.</li>"
     holding = "".join("<li><b>%s</b> (%s): %s</li>" % (esc(contacts[h["id"]]["name"]), esc(contacts[h["id"]]["company"]), esc(h["reason"]))
                       for h in brief.get("holding") or []) or "<li>No one.</li>"
 
+    today = dt.date.fromisoformat(packet["today"])
+    prepared = "Prepared %s %s from <b>%s</b> (%d contacts)" % (
+        WEEKDAYS[today.weekday()], esc(fmt_day(packet["today"])), esc(packet["roster"]["file"]), packet["roster"]["rows"])
     fr = packet["freshness"]
-    fresh_cls = ' class="caveat"' if fr["status"] in ("unconfirmed",) else ""
-    meta = ("Prepared %s from <b>%s</b> (%d contacts); every name, number and claim checked against it (check %s, see run-log.md). "
-            "<span%s>%s</span>") % (
-        esc(fmt_day(packet["today"])), esc(packet["roster"]["file"]), packet["roster"]["rows"],
-        esc((validation.get("sha256") or "")[:12]), fresh_cls, esc(fr["message"]))
+    meta = '<span%s>%s</span>' % (' class="caveat"' if fr["status"] == "unconfirmed" else "", esc(fr["message"]))
     banner = ""
     if unresolved:
         banner = '<div class="banner">Needs a human check (%s): %s</div>' % ("NF-08", "; ".join(esc(u) for u in unresolved))
+    version = plugin_version()
+    footer_left = "Network Focus%s &middot; fact check passed (brief fingerprint %s)%s" % (
+        " v" + esc(version) if version else "", esc((validation.get("sha256") or "")[:12]),
+        " &middot; reviewer: " + esc(reviewer) if reviewer else "")
     company = packet.get("company")
     return tpl.substitute(
         week_label=esc(fmt_day(packet["week_of"])), font_pt=("%.2f" % font_pt).rstrip("0").rstrip("."),
-        company_suffix=(" &middot; " + esc(company) + " CEO") if company else "",
-        meta_html=meta, banner_html=banner, headline=esc(brief["headline"]), picks_html="\n".join(picks),
-        dormant_html="\n".join(dormant), questions_html=questions, holding_html=holding)
+        body_class="compact" if compact else "",
+        company_suffix=(" &middot; " + esc(company) + " CEO") if company else "", prepared_html=prepared,
+        meta_html=meta, banner_html=banner, headline=esc(brief["headline"]),
+        goal_cols=max(1, min(len(goals), 4)), goals_html=goal_strip(brief, packet, contacts, goals),
+        picks_html="\n".join(picks), dormant_html="\n".join(dormant), questions_html=questions, holding_html=holding,
+        footer_left=footer_left, footer_right="The roster words behind every pick: run-log.md")
 
 
 def page_count_at_floor(brief, packet):
@@ -214,12 +296,25 @@ def page_count_at_floor(brief, packet):
         html_path = os.path.join(tmp, "fit.html")
         pdf_path = os.path.join(tmp, "fit.pdf")
         with open(html_path, "w", encoding="utf-8") as f:
-            f.write(build_html(brief, packet, {"sha256": "0" * 12}, 9.0, ""))
+            font_pt, compact = LAYOUTS[-1]
+            f.write(build_html(brief, packet, {"sha256": "0" * 64}, font_pt, FIT_BANNER, reviewer=FIT_REVIEWER, compact=compact))
         if not print_pdf(browser, html_path, pdf_path):
             return None
         return count_pages(pdf_path)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def reviewer_line(audit, unresolved):
+    """The reviewer's verdict as printed in the footer. 'Addressed' is the strategist's answer, not a second review."""
+    open_issues = as_list(unresolved)
+    if open_issues:
+        return "%d issue%s open (see banner)" % (len(open_issues), "" if len(open_issues) == 1 else "s")
+    if not audit:
+        return "not run"
+    if audit.get("verdict") == "revise":
+        return "must-fix issues addressed in one revision"
+    return audit.get("verdict") or "not run"
 
 
 def write_run_log(path, brief, packet, validation, audit, outputs, unresolved):
@@ -249,6 +344,18 @@ def write_run_log(path, brief, packet, validation, audit, outputs, unresolved):
     for c in packet["checks"]:
         L.append("- [%s] %s%s" % (c["severity"], c["message"], (" " + c["ask"]) if c.get("ask") else ""))
     L.append("")
+    groups = {g["id"]: g for g in packet.get("question_groups") or []}
+    if groups:
+        L.append("## Questions for the CEO")
+        for q in brief.get("ceo_questions") or []:
+            L.append("- %s" % question_text(q))
+            for gid in (q.get("covers") or []) if isinstance(q, dict) else []:
+                if gid in groups:
+                    L.append("  - answers [%s] %s" % (gid, " ".join(groups[gid]["messages"])))
+        _, left_over = covered_groups(brief, packet)
+        for g in left_over:
+            L.append("- Not on the page (lower priority): [%s] %s %s" % (g["id"], " ".join(g["messages"]), g["ask"]))
+        L.append("")
     L.append("## Picks and the roster words behind them")
     for sec in ("top_picks", "dormant"):
         for p in brief.get(sec) or []:
@@ -306,9 +413,10 @@ def main(run_dir, out, audit_unresolved=""):
         os.remove(pdf_path)  # never leave an earlier PDF looking like this run's result
     tmp_pdf = os.path.join(week_dir, stem + ".printing.pdf")
     pages = None
-    for font_pt in (9.5, 9.0):  # one tighten step at most; 9pt is the floor
+    reviewer = reviewer_line(audit, audit_unresolved)
+    for font_pt, compact in LAYOUTS:
         with open(html_path, "w", encoding="utf-8") as f:
-            f.write(build_html(brief, packet, validation, font_pt, audit_unresolved))
+            f.write(build_html(brief, packet, validation, font_pt, audit_unresolved, reviewer=reviewer, compact=compact))
         if not browser:
             break
         if not print_pdf(browser, html_path, tmp_pdf):
@@ -349,7 +457,7 @@ def main(run_dir, out, audit_unresolved=""):
     for h in brief.get("holding") or []:
         out("Holding: %s (%s): %s" % (contacts[h["id"]]["name"], contacts[h["id"]]["company"], h["reason"]))
     for q in brief.get("ceo_questions") or []:
-        out("Question for the CEO: %s" % q)
+        out("Question for the CEO: %s" % question_text(q))
     for u in brief.get("uncovered_goals") or []:
         if isinstance(u, dict):
             out("Goal with no one on file: %s: %s" % (u.get("goal"), u.get("reason")))

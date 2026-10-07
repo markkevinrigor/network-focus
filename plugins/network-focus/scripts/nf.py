@@ -103,12 +103,13 @@ def cmd_prepare(args):
                                        ", sheet '%s'" % roster["sheet"] if roster["sheet"] else ""))
     out("Week of: %s" % packet["week_of"])
     out("Data: %s" % packet["freshness"]["message"])
-    asks = [c for c in packet["checks"] if c["severity"] == "ask" and c["kind"] != "freshness"]
     infos = [c for c in packet["checks"] if c["severity"] == "info" and c["kind"] != "freshness"]
-    if asks:
-        out("Needs the CEO's or your input:")
-        for c in asks:
-            out("  - %s %s" % (c["message"], c.get("ask") or ""))
+    groups = packet["question_groups"]
+    if groups:
+        out("Needs the CEO's input (most important first; the brief must ask the first %d):"
+            % min(len(groups), packet["rules"]["ceo_questions_max"]))
+        for g in groups:
+            out("  - [%s] %s %s" % (g["id"], " ".join(g["messages"]), g["ask"]))
     if infos:
         out("Noted:")
         for c in infos:
